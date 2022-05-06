@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>SBO Place</title>
+<script type="text/javascript">
+window.onload = function () {
+    var conn;
+    var clients = {};
+    var objects = {};
+    var text_objects = {};
+    var log_msg = [];
+    var max_log_msg = 4;
+    var connected = false;
+    var disconnect_reason = " ";
+    var threshold = 0.5;
+    var canvas = document.getElementById("screen");
+    var own_id = -1;
+    var gw = 16;
+    var gh = 16;
+    var tid = 0;
+    var colors = {};
+    var cur_color = 0;
+    const rgb2hex = (rgb) => `#${rgb.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/).slice(1).map(n => parseInt(n, 10).toString(16).padStart(2, '0')).join('')}`
+
+    var citem = document.getElementsByClassName("coloritem");
+
+    for(var i = 0; i < citem.length; i++)
+    {
+        citem[i].onclick = function () {
+            console.log("citem " + this)
+            console.log("onchange color " + this.style.backgroundColor)
+           setcolor(rgb2hex(this.style.backgroundColor))  
+        };
+    }
+
+    colors[0]  = "#000000"; // black
+    
+    const { width, height } = canvas;
+    const ctx = canvas.getContext('2d');
+
+    var needsredraw = true;
+    ctx.fillStyle = "black";
+
+
+    function appendLog(text) {
+        console.log(text)
+
+        if (log_msg.length >= max_log_msg) {
+            log_msg.shift()
+        } 
+        log_msg.push(text);
+    }
+
+    function redraw() {
+        if (needsredraw) {
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (connected) {
+                for (const key in objects) {
+                    if (Object.hasOwnProperty.call(objects, key)) {
+                        const element = objects[key];
+                     
+                        ctx.fillStyle = element.colorID;
+                        ctx.fillRect(element.x, element.y, gw, gh);
+                    }
+                }
+
+                for (const key in clients) {
+                    if (Object.hasOwnProperty.call(clients, key)) {
+                        const element = clients[key];
+
+                        ctx.fillStyle = element.colorID;
+                        ctx.fillRect(element.x, element.y, gw, gh);
+                        
+                        if (own_id == key) { 
+                          ctx.strokeStyle= "red";
+                          ctx.beginPath();
+                          ctx.rect(element.x-1, element.y-1, gw+2, gh+2);
+                          ctx.stroke();      
+                          ctx.strokeStyle= "white";
+                          ctx.beginPath();
+                          ctx.rect(element.x-2, element.y-2, gw+4, gh+4);
+                          ctx.stroke();                     
+                        } else {
+                          ctx.strokeStyle= "black";
+                          ctx.beginPath();
+                          ctx.rect(element.x-1, element.y-1, gw+2, gh+2);
+                          ctx.stroke();      
+                          ctx.strokeStyle= "white";
+                          ctx.beginPath();
+                          ctx.rect(element.x-2, element.y-2, gw+4, gh+4);
+                          ctx.stroke();                               
+                        }
+                    }
+                }
+
+                for (const key in text_objects) {
+                    if (Object.hasOwnProperty.call(text_objects, key)) {
+                        const element = text_objects[key];
+
+                        ctx.fillStyle = element.color;
+                        ctx.textAlign = element.align;  //"center";
+                        ctx.font = element.font; // "30px Arial";
+                        ctx.fillText(element.text, element.x, element.y);
+                    }
+                }
+            } else {
+                ctx.fillStyle = "black";
+                ctx.textAlign = "center";
+                ctx.font = "30px Arial";
+                ctx.fillText("DISCONNECTED (" + disconnect_reason + ")", canvas.width/2, canvas.height/2);
+            }
+           
+            needsredraw = false
+        }
+    }
+
+    function setcolor(newcol)
+    {
+        colors[cur_color] = newcol
+
+        if (connected) {
+            var simpleCommand = new Object();
+            simpleCommand.Command = "SET_COLOR";
+            simpleCommand.Id = tid;
+            simpleCommand.Parameters = [];
+            
+            var command = new Object();
+            command.CommandType = "SIMPLE";
+            command.CommandData = simpleCommand;   
+            simpleCommand.Parameters.push(newcol); 
+            conn.send(JSON.stringify(command));
+        }
+    } 
+
+    function redrawLoop() {
+        redraw()
+        window.requestAnimationFrame(redrawLoop);
+    }
+
+    function connect_ws() {
+        conn = new WebSocket("wss://" + document.location.host + "/ws");
+        conn.onclose = function (evt) {
+            disconnect_reason = evt.code
+            connected = false
+            needsredraw = true
+
+            setTimeout(function() {
+                connect_ws();
+            }, 1000);
+        };
+
+        conn.onopen = function (evt) {
+            clients = {};
+            objects = {};
+            connected = true
+            disconnect_reason = ""
+            var uniCommand = new Object();
+            uniCommand.Command = "REQUEST_ALL_DATA";
+            
+            var command = new Object();
+            command.CommandType = "UNI";
+            command.CommandData = uniCommand;
+            conn.send(JSON.stringify(command))
+        }
+        conn.onmessage = function (evt) {
+            
+            //var messages = evt.data.split('\n');
+            //for (var i = 0; i < messages.length; i++) {
+                try {
+                    //const serverCommand = JSON.parse(messages[i])
+                    const serverCommand = JSON.parse(evt.data)
+                    if(serverCommand.CommandType === "UNI") {
+                        if(serverCommand.CommandData.Command === "CLEAR_ALL_DATA") {
+                            console.log("Clear all data")
+                            objects = {}
+                            clients = {}
+                            conn.onopen()
+                            needsredraw = true
+                        }
+                    } 
+                    
+                    if(serverCommand.CommandType === "SIMPLE") {
+                        //console.log("Received Simple Command : " + serverCommand.CommandData)
+                        if(serverCommand.CommandData.Command === "REMOVE_OBJECT_DATA") {
+                            
+                            //console.log("Removed object id: " + serverCommand.CommandData.Id)
+                            delete clients[serverCommand.CommandData.Id]
+                            delete objects[serverCommand.CommandData.Id]
+                            needsredraw = true
+                        }
+                        if(serverCommand.CommandData.Command === "REMOVE_TEXT_DATA") {
+                            
+                            //console.log("Removed object id: " + serverCommand.CommandData.Id)
+                            delete text_objects[serverCommand.CommandData.Id]
+                            needsredraw = true
+                        }                  
+
+                        if (serverCommand.CommandData.Command === "LOG_MESSAGE" ) {
+                            var text = serverCommand.CommandData.Parameters[0];
+                            appendLog(text)
+                            needsredraw = true
+                        }
+
+                        if (serverCommand.CommandData.Command === "UPDATE_OBJECT_DATA" ||
+                            serverCommand.CommandData.Command === "ADD_OBJECT_DATA") {
+                            var posX = parseInt( serverCommand.CommandData.Parameters[1]);
+                            var posY = parseInt( serverCommand.CommandData.Parameters[2]);
+                            var colorID = serverCommand.CommandData.Parameters[3];
+                            var objectType =  serverCommand.CommandData.Parameters[0];
+                            console.log("Type:" + objectType)
+                            if (objectType == "player") {
+                                if (!Object.hasOwnProperty.call(clients, serverCommand.CommandData.Id)) {
+                                    clients[serverCommand.CommandData.Id] = new Object();
+                                }
+                                clients[serverCommand.CommandData.Id].x = posX
+                                clients[serverCommand.CommandData.Id].y = posY
+                                clients[serverCommand.CommandData.Id].colorID = colorID
+                                needsredraw = true
+                            } else {
+                                if (!Object.hasOwnProperty.call(objects, serverCommand.CommandData.Id)) {
+                                    objects[serverCommand.CommandData.Id] = new Object();
+                                }
+                                objects[serverCommand.CommandData.Id].x = posX
+                                objects[serverCommand.CommandData.Id].y = posY
+                                objects[serverCommand.CommandData.Id].colorID = colorID
+                                needsredraw = true                                
+                            }
+                        }
+
+                        if (serverCommand.CommandData.Command === "CONFIG") {
+                            own_id = parseInt(serverCommand.CommandData.Parameters[0]);
+                            gw = parseInt(serverCommand.CommandData.Parameters[1]);
+                            gh = parseInt(serverCommand.CommandData.Parameters[2]);
+                            tid = parseInt(serverCommand.CommandData.Parameters[3]);
+                        }
+
+                        if (serverCommand.CommandData.Command === "ADD_TEXT_DATA" ||
+                            serverCommand.CommandData.Command === "UPDATE_TEXT_DATA") {
+                                
+                            var posX = parseInt(serverCommand.CommandData.Parameters[0]);
+                            var posY = parseInt(serverCommand.CommandData.Parameters[1]);
+                            var text = serverCommand.CommandData.Parameters[2];
+                            var font = serverCommand.CommandData.Parameters[3];
+                            var color = serverCommand.CommandData.Parameters[4];
+                            var align =  serverCommand.CommandData.Parameters[5];
+                            console.log("Add Text:" + text)
+                            if (!Object.hasOwnProperty.call(text_objects, serverCommand.CommandData.Id)) {
+                                text_objects[serverCommand.CommandData.Id] = new Object();
+                            }
+                            text_objects[serverCommand.CommandData.Id].x = posX
+                            text_objects[serverCommand.CommandData.Id].y = posY
+                            text_objects[serverCommand.CommandData.Id].text = text
+                            text_objects[serverCommand.CommandData.Id].font = font
+                            text_objects[serverCommand.CommandData.Id].color = color
+                            text_objects[serverCommand.CommandData.Id].align = align
+                            
+                            needsredraw = true                                
+                        }                        
+                    }
+                  
+                } catch(e) {
+                    console.log("JSON Parser Error" + e + " on " + evt.data)
+                    //console.log("JSON Parser Error" + e + " on " + messages[i])
+               }
+            //}
+        };
+    }
+
+    if (window["WebSocket"]) {
+        
+        connect_ws()
+
+        document.addEventListener('keydown', (event) => {
+            if (connected) {
+
+                /*if (event.keyCode === 13) {
+                    //cur_color += 1
+                    //cur_color %=16
+
+                    var simpleCommand = new Object();
+                    simpleCommand.Command = "SET_COLOR";
+                    simpleCommand.Id = 0;
+                    simpleCommand.Parameters = [];
+
+                    //inputc.jscolor.fromString(colors[cur_color]);
+                    
+                    var command = new Object();
+                    command.CommandType = "SIMPLE";
+                    command.CommandData = simpleCommand;   
+                    simpleCommand.Parameters.push(colors[cur_color]); 
+                    conn.send(JSON.stringify(command)) 
+
+                    //needsredraw = true   
+                }*/
+
+                if (event.keyCode === 37||
+                    event.keyCode === 38||
+                    event.keyCode === 39||
+                    event.keyCode === 40 ||
+                    event.keyCode === 32 ||
+                    event.keyCode === 8) {
+                    
+                    var simpleCommand = new Object();
+                    simpleCommand.Command = "KEY_PRESSED";
+                    simpleCommand.Id = tid;
+                    simpleCommand.Parameters = [];
+                    
+                    var command = new Object();
+                    command.CommandType = "SIMPLE";
+                    command.CommandData = simpleCommand;
+
+                    //console.log("Event Key Code: " + event.keyCode)
+
+                    //left
+                    if (event.keyCode === 37) {
+                        simpleCommand.Parameters.push("LEFT");
+                    }
+                    //up
+                    else if (event.keyCode === 38) {
+                        simpleCommand.Parameters.push("UP");
+                    }
+                    //right
+                    else if (event.keyCode === 39) {
+                        simpleCommand.Parameters.push("RIGHT");
+                    }
+                    //down
+                    else if(event.keyCode === 40) {
+                        simpleCommand.Parameters.push("DOWN");
+                    }
+                    // space
+                    else if(event.keyCode === 32) {
+                        simpleCommand.Parameters.push("SPACE");
+                    }
+                    else if(event.keyCode === 8) {
+                        simpleCommand.Parameters.push("BACK");
+                    }
+                
+                    
+                    conn.send(JSON.stringify(command))
+                }
+ 
+                // prevent normal arrow functionality
+                event.preventDefault();
+            }
+        });
+
+        redrawLoop();
+
+    } else {
+        var item = document.createElement("div");
+        item.innerHTML = "<b>Your browser does not support WebSockets.</b>";
+    }
+};
+</script>
+<style type="text/css">
+html {
+    overflow: hidden;
+}
+
+body {
+    overflow: hidden;
+    padding: 0;
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: rgb(156, 156, 156);
+}
+
+#log {
+    background: white;
+    margin: 0;
+    padding: 0.5em 0.5em 0.5em 0.5em;
+    position: absolute;
+    top: 30em;
+    left: 0.5em;
+    right: 0.5em;
+    bottom: 3em;
+    overflow: auto;
+}
+
+#screen {
+    background: rgb(156, 156, 156);
+    padding-left: 0;
+    padding-right: 0;
+    margin-top: 0px;
+    margin-left: auto;
+    margin-right: auto;
+    display: block;
+    border-color: black;
+    border-style: solid;
+}
+
+#colpick {
+    margin: 0;
+    padding: 0.5em 0.5em 0.5em 0.5em;
+    //position: absolute;
+    top: 0.5em;
+    left: 0.5em;
+    right: 0.5em;
+    overflow: auto;
+    text-align: center;
+}
+.coloritem {
+    border-color: black;
+    border-radius: 6px;
+    border-style: solid;
+    width:  5px;
+    height: 5px;
+    display: flex;
+    padding: 0.5em 0.5em 0.5em 0.5em;
+    margin: 2px;
+    display:inline-block;
+}
+.coloritem:hover {
+    border-color: rgb(94, 94, 94);
+    border-radius: 6px;
+    border-style: solid;
+    width:  5px;
+    height: 5px;
+    display: flex;
+    padding: 0.5em 0.5em 0.5em 0.5em;
+    margin: 2px;
+    display:inline-block;
+}
+
+</style>
+</head>
+<body>  
+    <div id="colpick"> 
+        <div class="coloritem" style="background-color:#000000"></div>
+        <div class="coloritem" style="background-color:#808080"></div>
+        <div class="coloritem" style="background-color:#C0C0C0"></div>
+        <div class="coloritem" style="background-color:#FFFFFF"></div>
+
+        <div class="coloritem" style="background-color:#800000"></div>
+        <div class="coloritem" style="background-color:#FF0000"></div>
+        <div class="coloritem" style="background-color:#808000"></div>
+        <div class="coloritem" style="background-color:#FFFF00"></div>
+
+        <div class="coloritem" style="background-color:#008000"></div>
+        <div class="coloritem" style="background-color:#00FF00"></div>
+        <div class="coloritem" style="background-color:#008080"></div>
+        <div class="coloritem" style="background-color:#00FFFF"></div>
+
+        <div class="coloritem" style="background-color:#000080"></div>
+        <div class="coloritem" style="background-color:#0000FF"></div>
+        <div class="coloritem" style="background-color:#800080"></div>
+        <div class="coloritem" style="background-color:#FF00FF"></div>
+
+        <div class="coloritem" style="background-color:#f55525"></div>
+        <div class="coloritem" style="background-color:#FFFFA0"></div>
+        <div class="coloritem" style="background-color:#88dd20"></div>
+        <div class="coloritem" style="background-color:#22e0cd"></div>
+
+        <div class="coloritem" style="background-color:#269aff"></div>
+        <div class="coloritem" style="background-color:#9effab"></div>
+        <div class="coloritem" style="background-color:#FFC0CB"></div>
+        <div class="coloritem" style="background-color:#8B4513"></div>
+    </div>
+    <canvas id="screen" width="800" height="600"></canvas>
+</body>
+
+</html>
